@@ -88,6 +88,8 @@ class CoTAgent(IReactiveAgent):
         self.group_channel_messages = defaultdict(list)
         self.seer_checks = {}  # To store the seer's checks and results
         self.game_history = []  # To store the interwoven game history
+        self.voting_history = []
+        self.player_profile_history = []
 
         self.llm_config = self.sentient_llm_config["config_list"][0]
         self.openai_client = OpenAI(
@@ -120,6 +122,26 @@ class CoTAgent(IReactiveAgent):
             if message.header.channel == self.GAME_CHANNEL and message.header.sender == self.MODERATOR_NAME and not self.game_intro:
                 self.game_intro = message.content.text
         logger.info(f"message stored in messages {message}")
+
+        voting_analysis_prompt = f"""Given {message}, if it is a voting round, return voting results, in the format of player_name_1: [vote1, vote2]; player_name_2: [vote1, vote2], etc. """
+        voting_analysis_response = self.openai_client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": f"You are a {self.role} in a Werewolf game."},
+                {"role": "user", "content": voting_analysis_prompt}
+            ]
+        )
+        self.voting_history.append(voting_analysis_response)
+
+        player_profile_prompt = f"""Given {message},  give me your best judgement on each player's role, in format of player_name_1: role; player_name_2: role, etc. """
+        player_profile_response = self.openai_client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": f"You are a {self.role} in a Werewolf game."},
+                {"role": "user", "content": player_profile_prompt}
+            ]
+        )
+        self.player_profile_history.append(player_profile_response)
 
     def get_interwoven_history(self, include_wolf_channel=False):
         return "\n".join([
@@ -186,11 +208,17 @@ class CoTAgent(IReactiveAgent):
         
         return ActivityResponse(response=response_message)
 
-    def _get_inner_monologue(self, role_prompt, game_situation, specific_prompt):
+    def _get_inner_monologue(self, role_prompt, game_situation, voting_history, player_profile_history, specific_prompt):
         prompt = f"""{role_prompt}
 
 Current game situation (including your past thoughts and actions): 
 {game_situation}
+
+Game voting history:
+{voting_history}
+
+Player profile history (your past best guesses):
+{player_profile_history}
 
 {specific_prompt}"""
 
@@ -306,7 +334,7 @@ Based on your thoughts, the current situation, and your reflection on the initia
 4. What information would be most valuable for the village at this point in the game?
 5. How can I guide the discussion during the day subtly to help the village? Should I reveal my role at this point?"""
 
-        inner_monologue = self._get_inner_monologue(self.SEER_PROMPT, game_situation, specific_prompt)
+        inner_monologue = self._get_inner_monologue(self.SEER_PROMPT, game_situation, self.voting_history, self.player_profile_history, specific_prompt)
 
         action = self._get_final_action(self.SEER_PROMPT, game_situation, inner_monologue, "choice of player to investigate")
 
@@ -322,7 +350,7 @@ Based on your thoughts, the current situation, and your reflection on the initia
 4. How can I vary my protection pattern to avoid being predictable to the werewolves?
 5. How can I contribute to the village discussions with or without revealing my role? Should I reveal my role at this point?"""
 
-        inner_monologue = self._get_inner_monologue(self.DOCTOR_PROMPT, game_situation, specific_prompt)
+        inner_monologue = self._get_inner_monologue(self.DOCTOR_PROMPT, game_situation, self.voting_history, self.player_profile_history, specific_prompt)
 
         action = self._get_final_action(self.DOCTOR_PROMPT, game_situation, inner_monologue, "choice of player to protect")        
         return action
@@ -339,7 +367,7 @@ Based on your thoughts, the current situation, and your reflection on the initia
 5. If it's time to vote, who should I vote for and why, considering all the information available?
 6. How do I respond if accused during the day without revealing my role?"""
 
-        inner_monologue = self._get_inner_monologue(role_prompt, game_situation, specific_prompt)
+        inner_monologue = self._get_inner_monologue(role_prompt, game_situation, self.voting_history, self.player_profile_history, specific_prompt)
 
         action = self._get_final_action(role_prompt, game_situation, inner_monologue, "vote and discussion point which includes reasoning behind your vote")        
         return action
@@ -358,7 +386,7 @@ Based on your thoughts, the current situation, and your reflection on the initia
 5. Arrive at a consensus for the target and suggest it to the group. Always make suggestions to eliminate at least one person.
 6. How can we defend ourselves if accused during the day without revealing our roles?"""
 
-        inner_monologue = self._get_inner_monologue(self.WOLF_PROMPT, game_situation, specific_prompt)
+        inner_monologue = self._get_inner_monologue(self.WOLF_PROMPT, game_situation, self.voting_history, self.player_profile_history, specific_prompt)
 
         action = self._get_final_action(self.WOLF_PROMPT, game_situation, inner_monologue, "suggestion for target")        
         return action
